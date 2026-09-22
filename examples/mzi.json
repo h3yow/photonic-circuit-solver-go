@@ -1,0 +1,26 @@
+{
+  "version": "1.1",
+  "circuit": {
+    "id": "example-mzi",
+    "wavelength": 1.55,
+    "loss_unit": "db_per_m",
+    "devices": [
+      {"id": "bs1", "kind": "beamsplitter", "params": {}},
+      {"id": "bs2", "kind": "beamsplitter", "params": {}},
+      {"id": "arm_a", "kind": "waveguide", "params": {"length": 15.5, "neff": 2.0, "loss": 0}},
+      {"id": "arm_b", "kind": "waveguide", "params": {"length": 15.5, "neff": 2.0, "loss": 0}},
+      {"id": "ps", "kind": "phaseshifter", "params": {"u0": 0.0, "k": 1.0, "gamma": 0.0}}
+    ],
+    "connects": [
+      {"from": {"external": "in0"}, "to": {"device": "bs1", "port": "a"}},
+      {"from": {"external": "in1"}, "to": {"device": "bs1", "port": "b"}},
+      {"from": {"device": "bs1", "port": "c"}, "to": {"device": "arm_a", "port": "in"}},
+      {"from": {"device": "arm_a", "port": "out"}, "to": {"device": "ps", "port": "in"}},
+      {"from": {"device": "ps", "port": "out"}, "to": {"device": "bs2", "port": "a"}},
+      {"from": {"device": "bs1", "port": "d"}, "to": {"device": "arm_b", "port": "in"}},
+      {"from": {"device": "arm_b", "port": "out"}, "to": {"device": "bs2", "port": "b"}},
+      {"from": {"device": "bs2", "port": "c"}, "to": {"external": "out0"}},
+      {"from": {"device": "bs2", "port": "d"}, "to": {"external": "out1"}}
+    ]
+  }
+}
