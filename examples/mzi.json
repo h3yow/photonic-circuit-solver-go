@@ -1,0 +1,21 @@
+{
+  "version": "1.1",
+  "devices": [
+    {"id": "b1", "type": "beam_splitter", "params": {}},
+    {"id": "ps", "type": "phase_shifter", "params": {"bias": 0.0}},
+    {"id": "wg", "type": "waveguide", "params": {"phase": 0.0}},
+    {"id": "b2", "type": "beam_splitter", "params": {}}
+  ],
+  "connections": [
+    {"a": {"device": "b1", "port": "out1"}, "b": {"device": "ps", "port": "in"}},
+    {"a": {"device": "ps", "port": "out"}, "b": {"device": "b2", "port": "in1"}},
+    {"a": {"device": "b1", "port": "out2"}, "b": {"device": "wg", "port": "in"}},
+    {"a": {"device": "wg", "port": "out"}, "b": {"device": "b2", "port": "in2"}}
+  ],
+  "external_ports": [
+    {"device": "b1", "port": "in1"},
+    {"device": "b1", "port": "in2"},
+    {"device": "b2", "port": "out1"},
+    {"device": "b2", "port": "out2"}
+  ]
+}
