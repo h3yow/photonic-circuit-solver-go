@@ -351,6 +351,11 @@ func (c *CompiledCircuit) buildDevices(m *Model) error {
 			params[k] = v
 		}
 		applyParamDefaults(d.Kind, params)
+		// 波导损耗在编译期按该器件的有效单位归一化为 db_per_m，
+		// 求解路径不再关心单位（单位来源见 Device.LossUnitSource）。
+		if d.Kind == KindWaveguide {
+			params["loss"] = lossToDBPerM(params["loss"], d.LossUnit)
+		}
 		cd := compiledDevice{
 			idx:      i,
 			id:       d.ID,
@@ -363,6 +368,17 @@ func (c *CompiledCircuit) buildDevices(m *Model) error {
 		c.deviceByID[d.ID] = i
 	}
 	return nil
+}
+
+// lossToDBPerM 把声明单位下的损耗值换算为内部统一的 db_per_m。
+// unit 必为迁移期校验过的合法单位；空串按 db_per_m 处理（非波导器件不会走到这里）。
+func lossToDBPerM(v float64, unit string) float64 {
+	switch unit {
+	case lossDBPerCm:
+		return v * 100 // 1 dB/cm = 100 dB/m
+	default: // lossDBPerM 或空
+		return v
+	}
 }
 
 // applyParamDefaults 为各器件类型登记稳定缺省值。

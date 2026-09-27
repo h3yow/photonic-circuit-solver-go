@@ -3,6 +3,7 @@ package solver
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -167,4 +168,67 @@ func sameResult(a, b *SolveResult) bool {
 		}
 	}
 	return true
+}
+
+// 审计、等价核验与求解混合并发：结论必须逐位一致，
+// 且任何调用都不得改变已载入电路或影响其它请求。
+func TestConcurrentAuditCompareSolveConsistency(t *testing.T) {
+	e, _ := NewEngine()
+	c, err := e.LoadModel(context.Background(), []byte(mziDoc()))
+	if err != nil {
+		t.Fatalf("LoadModel: %v", err)
+	}
+	docA := waveguideDoc("1.0", "", "", 200)
+	docB := waveguideDoc("1.2", "", "db_per_cm", 2)
+
+	type outcome struct {
+		audit *AuditReport
+		eq    *EquivalenceReport
+		solve *BatchResult
+	}
+	const n = 48
+	outs := make([]outcome, n)
+	errs := make([]error, n)
+	var wg sync.WaitGroup
+	for g := 0; g < n; g++ {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			var o outcome
+			if o.audit, errs[g] = e.Audit(context.Background(), c); errs[g] != nil {
+				return
+			}
+			if o.eq, errs[g] = e.CompareModels(context.Background(), []byte(docA), []byte(docB)); errs[g] != nil {
+				return
+			}
+			o.solve, errs[g] = e.Solve(context.Background(), c, SolveRequest{
+				Batch:  []Excitation{{Port: "in0", Amplitude: complex(0.5, 0.5)}},
+				Phases: map[string]float64{"ps": 0.42},
+				Method: SolverCrossCheck,
+			})
+			outs[g] = o
+		}(g)
+	}
+	wg.Wait()
+	for g := 0; g < n; g++ {
+		if errs[g] != nil {
+			t.Fatalf("goroutine %d: %v", g, errs[g])
+		}
+	}
+	ref := outs[0]
+	for g := 1; g < n; g++ {
+		if !reflect.DeepEqual(ref.audit, outs[g].audit) {
+			t.Fatalf("audit report differs: g0 vs g%d", g)
+		}
+		if !reflect.DeepEqual(ref.eq, outs[g].eq) {
+			t.Fatalf("equivalence report differs: g0 vs g%d", g)
+		}
+		if !sameResult(ref.solve.Results[0], outs[g].solve.Results[0]) {
+			t.Fatalf("solve result differs: g0 vs g%d", g)
+		}
+	}
+	// 等价结论本身正确（跨版本同一物理电路）。
+	if !ref.eq.Equal {
+		t.Fatalf("expected equivalent documents, got:\n%s", ref.eq.String())
+	}
 }

@@ -34,7 +34,8 @@ func deviceBlockFor(d *compiledDevice, set phaseModel, wl float64) (deviceBlock,
 		neff := d.params["neff"]
 		loss := d.params["loss"]
 		// 内部统一单位：长度与波长均为微米。
-		// β = 2π n_eff / λ_μm。损耗 loss（dB/m）先换算为 dB/μm（÷1e6），
+		// β = 2π n_eff / λ_μm。编译期已把 loss 归一化为 dB/m（见 lossToDBPerM），
+		// 这里先换算为 dB/μm（÷1e6），
 		// 再换算为奈培/μm：α = ln(10)/10 * loss_dB_per_um。
 		lossDBPerUM := loss / 1e6
 		alphaPerUM := (math.Ln10 / 10.0) * lossDBPerUM

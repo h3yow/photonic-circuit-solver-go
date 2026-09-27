@@ -14,6 +14,8 @@ type Limits struct {
 	// SolverTolerance 两种求解途径交叉校验的相对+绝对容差。
 	// 判定：|a-b| <= SolverTolerance*max(1,|a|,|b|)。
 	SolverTolerance float64
+	// EquivalenceTolerance 跨文档等价核验的相对+绝对容差，判定式同上。
+	EquivalenceTolerance float64
 	// MaxInputAmplitude 允许注入的最大复振幅模长（物理边界）。
 	MaxInputAmplitude float64
 	// MaxControl 移相器控制量的允许范围（物理边界，绝对值）。
@@ -29,16 +31,18 @@ func DefaultLimits() Limits {
 		MaxBatchSize:       1024,
 		MaxCalibIterations: 100,
 		// 两条独立数值途径之间约定 1e-9 相对容差（见 docs/overview.md）。
-		SolverTolerance:   1e-9,
-		MaxInputAmplitude: 1e6,
-		MaxControl:        1e6,
+		SolverTolerance: 1e-9,
+		// 跨文档等价核验约定同一量级容差。
+		EquivalenceTolerance: 1e-9,
+		MaxInputAmplitude:    1e6,
+		MaxControl:           1e6,
 	}
 }
 
 // validate 检查 Limits 自身的一致性。
 func (l Limits) validate() error {
 	if l.MaxDevices <= 0 || l.MaxConnections <= 0 || l.MaxBatchSize <= 0 ||
-		l.MaxCalibIterations <= 0 || l.SolverTolerance <= 0 ||
+		l.MaxCalibIterations <= 0 || l.SolverTolerance <= 0 || l.EquivalenceTolerance <= 0 ||
 		l.MaxInputAmplitude <= 0 || l.MaxControl <= 0 {
 		return newError(ErrInvalidParameter, "limits must contain strictly positive values").
 			withDetail("limits", l)

@@ -35,8 +35,8 @@ func TestVersion10DefaultsToLossDBPerM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadModel: %v", err)
 	}
-	if got := c.model.Version; got != "1.1" {
-		t.Fatalf("internal version = %q, want migrated 1.1", got)
+	if got := c.model.Version; got != "1.2" {
+		t.Fatalf("internal version = %q, want migrated 1.2", got)
 	}
 	if got := c.model.Circuit.LossUnit; got != "db_per_m" {
 		t.Fatalf("loss unit = %q, want db_per_m default", got)
@@ -78,7 +78,7 @@ func TestVersion10WithFutureFieldRejected(t *testing.T) {
 }
 
 func TestUnsupportedVersion(t *testing.T) {
-	for _, v := range []string{"2.0", "1.2", "0.9", "abc", ""} {
+	for _, v := range []string{"2.0", "1.3", "0.9", "abc", ""} {
 		doc := `{"version":"` + v + `","circuit":{"id":"x","wavelength":1.55,"devices":[],"connects":[]}}`
 		if code := loadErrCode(t, doc); code != ErrVersionUnsupported {
 			t.Fatalf("version %q: want VERSION_UNSUPPORTED, got %s", v, code)

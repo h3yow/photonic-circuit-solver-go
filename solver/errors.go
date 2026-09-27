@@ -15,6 +15,9 @@ const (
 	ErrUnknownField ErrorCode = "UNKNOWN_FIELD"
 	// ErrModelMigration 旧版本迁移时出现无法确定缺省语义的演进。
 	ErrModelMigration ErrorCode = "MODEL_MIGRATION"
+	// ErrConflictingDeclaration 同一处出现相互冲突的声明
+	// （如重复 JSON 键、非波导器件声明损耗单位）。
+	ErrConflictingDeclaration ErrorCode = "CONFLICTING_DECLARATION"
 	// ErrDuplicateID 器件或外部端口标识重复。
 	ErrDuplicateID ErrorCode = "DUPLICATE_ID"
 	// ErrPortMissing 连接引用了不存在的器件/端口。

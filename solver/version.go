@@ -10,7 +10,8 @@ import (
 const (
 	versionOneDotZero   ModelVersion = "1.0"
 	versionOneDotOne    ModelVersion = "1.1"
-	currentModelVersion              = versionOneDotOne
+	versionOneDotTwo    ModelVersion = "1.2"
+	currentModelVersion              = versionOneDotTwo
 )
 
 // lossUnit 取值常量。
@@ -21,10 +22,12 @@ const (
 
 // wireDevice 是模型 JSON 的器件表示；参数以原始 JSON 保留，
 // 以便逐字段严格解码并拒绝未知参数，而不是静默丢弃。
+// LossUnit 为 1.2 引入的器件级损耗单位声明（仅波导可用）。
 type wireDevice struct {
-	ID     string                     `json:"id"`
-	Kind   string                     `json:"kind"`
-	Params map[string]json.RawMessage `json:"params,omitempty"`
+	ID       string                     `json:"id"`
+	Kind     string                     `json:"kind"`
+	LossUnit *string                    `json:"loss_unit,omitempty"`
+	Params   map[string]json.RawMessage `json:"params,omitempty"`
 }
 
 // wireEndpoint 要求三选一：{"external": "in0"} 或 {"device":"d1","port":"in"}。
@@ -80,10 +83,15 @@ func parseModel(data []byte, limits Limits) (*Model, error) {
 	if dec.More() {
 		return nil, newError(ErrUnknownField, "trailing data after model document")
 	}
+	// 同一对象内重复键属于相互冲突的声明（encoding/json 默认静默取后者），
+	// 必须在解码后显式拒绝。
+	if err := checkDuplicateKeys(data); err != nil {
+		return nil, err
+	}
 
 	v := ModelVersion(wm.Version)
 	switch v {
-	case versionOneDotZero, versionOneDotOne:
+	case versionOneDotZero, versionOneDotOne, versionOneDotTwo:
 	default:
 		return nil, newError(ErrVersionUnsupported, "model version %q is outside supported range [%s,%s]",
 			wm.Version, versionOneDotZero, currentModelVersion).
@@ -115,7 +123,8 @@ func parseModel(data []byte, limits Limits) (*Model, error) {
 }
 
 // validateMigration 拒绝跨版本的语义不确定演进：
-// 旧版（1.0）模型不得携带仅在新版（1.1）才有定义的 loss_unit。
+//   - 旧版（1.0）模型不得携带仅在 1.1 才有定义的 circuit.loss_unit；
+//   - 1.0/1.1 模型不得携带仅在 1.2 才有定义的器件级 loss_unit。
 func validateMigration(v ModelVersion, wc wireCircuit) error {
 	if v == versionOneDotZero && wc.LossUnit != nil {
 		return newError(ErrModelMigration,
@@ -123,6 +132,19 @@ func validateMigration(v ModelVersion, wc wireCircuit) error {
 			withDetail("field", "circuit.loss_unit").
 			withDetail("declared_version", "1.0").
 			withDetail("introduced_in", "1.1")
+	}
+	if v == versionOneDotZero || v == versionOneDotOne {
+		for _, wd := range wc.Devices {
+			if wd.LossUnit != nil {
+				return newError(ErrModelMigration,
+					"model declares version %s but device %q carries 1.2-only field 'loss_unit': semantics cannot be inferred",
+					v, wd.ID).
+					withDetail("field", "device.loss_unit").
+					withDetail("device", wd.ID).
+					withDetail("declared_version", string(v)).
+					withDetail("introduced_in", "1.2")
+			}
+		}
 	}
 	return nil
 }
@@ -141,9 +163,10 @@ func migrate(v ModelVersion, wm wireModel) (*Model, error) {
 	}
 	m.Circuit.Wavelength = *wc.Wavelength
 
-	// 缺省语义 2：loss_unit 仅 1.1 可显式给出；1.0 模型缺省为 db_per_m。
+	// 缺省语义 2：loss_unit 1.1 起可在电路级显式给出；1.0 模型缺省为 db_per_m。
+	circuitUnitDeclared := wc.LossUnit != nil
 	switch {
-	case wc.LossUnit != nil:
+	case circuitUnitDeclared:
 		switch *wc.LossUnit {
 		case lossDBPerM, lossDBPerCm:
 			m.Circuit.LossUnit = *wc.LossUnit
@@ -161,6 +184,36 @@ func migrate(v ModelVersion, wm wireModel) (*Model, error) {
 		if !knownKind {
 			return nil, newError(ErrInvalidParameter, "device %q has unknown kind %q", wd.ID, wd.Kind).
 				withDetail("device", wd.ID).withDetail("kind", wd.Kind)
+		}
+		// 缺省语义 3（1.2 起）：器件级 loss_unit 覆盖电路级；未声明时回落到
+		// 电路级声明，再回落到版本缺省。非波导器件声明损耗单位属于冲突声明。
+		if wd.LossUnit != nil {
+			if wd.Kind != KindWaveguide {
+				return nil, newError(ErrConflictingDeclaration,
+					"device %q (%s) declares loss_unit but only waveguides have loss semantics",
+					wd.ID, wd.Kind).
+					withDetail("device", wd.ID).
+					withDetail("kind", wd.Kind).
+					withDetail("field", "device.loss_unit")
+			}
+			switch *wd.LossUnit {
+			case lossDBPerM, lossDBPerCm:
+				d.LossUnit = *wd.LossUnit
+				d.LossUnitSource = UnitSourceDevice
+			default:
+				return nil, newError(ErrInvalidParameter,
+					"device %q has unknown loss_unit %q", wd.ID, *wd.LossUnit).
+					withDetail("device", wd.ID).
+					withDetail("loss_unit", *wd.LossUnit)
+			}
+		} else if wd.Kind == KindWaveguide {
+			if circuitUnitDeclared {
+				d.LossUnit = m.Circuit.LossUnit
+				d.LossUnitSource = UnitSourceCircuit
+			} else {
+				d.LossUnit = lossDBPerM
+				d.LossUnitSource = UnitSourceVersionDefault
+			}
 		}
 		for name, raw := range wd.Params {
 			if _, ok := allowed[name]; !ok {
@@ -232,6 +285,59 @@ func endpointLabel(ep Endpoint) string {
 		return "external:" + ep.External
 	}
 	return fmt.Sprintf("%s.%s", ep.Device, ep.Port)
+}
+
+// checkDuplicateKeys 扫描整份文档，拒绝同一对象内出现重复键。
+// encoding/json 对重复键静默取最后值，这属于同一处相互冲突的声明，
+// 必须显式拒绝而不是猜测。调用前主解码已成功，故此处 Token 出错
+// （含 EOF）直接结束扫描。
+func checkDuplicateKeys(data []byte) error {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	type frame struct {
+		object    bool
+		expectKey bool
+		keys      map[string]struct{}
+	}
+	var stack []*frame
+	// consumeValue 在栈顶对象帧中标记“一个值已读完”，下一个字符串将是键。
+	consumeValue := func() {
+		if n := len(stack); n > 0 && stack[n-1].object {
+			stack[n-1].expectKey = true
+		}
+	}
+	for {
+		tok, err := dec.Token()
+		if err != nil { // EOF 或语法错误（主解码已分类过语法错误）
+			return nil
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{':
+				stack = append(stack, &frame{object: true, expectKey: true, keys: map[string]struct{}{}})
+			case '[':
+				stack = append(stack, &frame{})
+			case '}', ']':
+				stack = stack[:len(stack)-1]
+				consumeValue()
+			}
+		case string:
+			if n := len(stack); n > 0 && stack[n-1].object && stack[n-1].expectKey {
+				top := stack[n-1]
+				if _, dup := top.keys[t]; dup {
+					return newError(ErrConflictingDeclaration,
+						"duplicate key %q in the same JSON object (conflicting declarations)", t).
+						withDetail("key", t)
+				}
+				top.keys[t] = struct{}{}
+				top.expectKey = false
+			} else {
+				consumeValue()
+			}
+		default: // 数字、布尔、null 等标量值
+			consumeValue()
+		}
+	}
 }
 
 // classifyJSONError 将 JSON 层错误归类到稳定错误码。
