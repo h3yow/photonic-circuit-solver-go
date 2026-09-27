@@ -351,6 +351,12 @@ func (c *CompiledCircuit) buildDevices(m *Model) error {
 			params[k] = v
 		}
 		applyParamDefaults(d.Kind, params)
+		// 损耗单位归一化：内部统一按 dB/m 存储与求解（见 device.go）。
+		// 器件级单位（1.2）优先，未声明的继承电路级单位；
+		// 归一化只在编译期发生一次，求解期不再做隐式换算。
+		if d.Kind == KindWaveguide {
+			params["loss"] = lossToDBPerM(params["loss"], d.LossUnit)
+		}
 		cd := compiledDevice{
 			idx:      i,
 			id:       d.ID,
@@ -363,6 +369,15 @@ func (c *CompiledCircuit) buildDevices(m *Model) error {
 		c.deviceByID[d.ID] = i
 	}
 	return nil
+}
+
+// lossToDBPerM 把声明单位下的损耗值换算为内部统一的 dB/m。
+// 空单位（程序化构造的 Model）按 db_per_m 处理，不做换算。
+func lossToDBPerM(v float64, unit string) float64 {
+	if unit == lossDBPerCm {
+		return v * 100 // 1 dB/cm = 100 dB/m
+	}
+	return v
 }
 
 // applyParamDefaults 为各器件类型登记稳定缺省值。
