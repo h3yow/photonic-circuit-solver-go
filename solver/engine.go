@@ -109,8 +109,10 @@ func (e *Engine) AuditDocument(ctx context.Context, data []byte) (*AuditReport, 
 }
 
 // CompareModels 对两份模型文档做跨版本、跨声明的等价核验。
-// 两份文档都必须能确定地解析与迁移；任一份落在无法确定语义的版本上，
-// 整体拒绝并说明原因，绝不挑一份继续算。
+// 两份文档都必须能确定地解析、迁移，且物理语义合法（参数取值在物理范围内、
+// 同一器件不得同时给出互斥声明，如分束器的 theta 与 reflectivity）；
+// 任一份落在无法确定语义的版本/声明组合或物理含义无法成立的取值上，
+// 整体拒绝并说明原因，绝不挑一份继续算，也绝不返回半截报告。
 // 核验为纯函数：不改动任何已载入电路，可并发调用。
 func (e *Engine) CompareModels(ctx context.Context, docA, docB []byte) (*EquivalenceReport, error) {
 	if err := ctx.Err(); err != nil {
@@ -124,14 +126,29 @@ func (e *Engine) CompareModels(ctx context.Context, docA, docB []byte) (*Equival
 	if err != nil {
 		return nil, undecidableEquivalence("B", err)
 	}
-	return compareModels(ma, mb, e.limits.EquivalenceTolerance), nil
+	// 物理语义校验：等价核验必须建立在取值合法、声明无歧义的模型上。
+	// 复用编译期同一套规则（工作波长、逐器件参数范围、互斥声明），
+	// 避免越界值（如按百分比填写的 reflectivity=30）折算为 NaN 后
+	// 产出无法序列化、没有物理意义的报告；但不做拓扑/连接校验——
+	// 结构差异本身正是核验要报告的内容。
+	if err := validateCircuitParams(&ma.Circuit); err != nil {
+		return nil, undecidableEquivalence("A", err)
+	}
+	if err := validateCircuitParams(&mb.Circuit); err != nil {
+		return nil, undecidableEquivalence("B", err)
+	}
+	rep, err := compareModels(ma, mb, e.limits.EquivalenceTolerance)
+	if err != nil {
+		return nil, err
+	}
+	return rep, nil
 }
 
 // undecidableEquivalence 保留原始错误码并补充“无法确定等价语义”的上下文。
 func undecidableEquivalence(side string, err error) error {
 	if se, ok := AsSolverError(err); ok {
 		return wrapError(se.Code, err,
-			"equivalence undecidable: document %s cannot be loaded with determined semantics", side)
+			"equivalence undecidable: document %s cannot be compared with determined semantics", side)
 	}
 	return err
 }

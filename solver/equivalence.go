@@ -26,16 +26,18 @@ type DeviceComparison struct {
 }
 
 // Mismatch 描述一处不等价判定依据：哪个器件、哪个量、两边各是什么、
-// 差多少、为什么判为不等。Numeric 为 false 时 A/B/Diff 无效
-// （结构性差异，如器件缺失、类型不同、连接不同），原因在 Reason 中。
+// 差多少、为什么判为不等。Numeric 为 false 时 A/B/Diff 在 JSON 中显式为
+// null（结构性差异，如器件缺失、类型不同、连接不同），原因在 Reason 中。
+// Numeric 为 true 时 A/B/Diff 必定逐项给出（即便差值为 0 也不缺项），
+// 且全部为有限值，可直接 JSON 序列化交给下游。
 type Mismatch struct {
-	DeviceID string  `json:"device_id,omitempty"`
-	Quantity string  `json:"quantity,omitempty"`
-	Numeric  bool    `json:"numeric"`
-	A        float64 `json:"a,omitempty"`
-	B        float64 `json:"b,omitempty"`
-	Diff     float64 `json:"diff,omitempty"`
-	Reason   string  `json:"reason"`
+	DeviceID string   `json:"device_id,omitempty"`
+	Quantity string   `json:"quantity,omitempty"`
+	Numeric  bool     `json:"numeric"`
+	A        *float64 `json:"a"`
+	B        *float64 `json:"b"`
+	Diff     *float64 `json:"diff"`
+	Reason   string   `json:"reason"`
 }
 
 // EquivalenceReport 是跨版本/跨声明等价核验结果。
@@ -68,9 +70,9 @@ func (r *EquivalenceReport) String() string {
 		if m.Numeric {
 			fmt.Fprintf(&b, "MISMATCH device=%q quantity=%q A=%s B=%s diff=%s: %s\n",
 				m.DeviceID, m.Quantity,
-				strconv.FormatFloat(m.A, 'g', -1, 64),
-				strconv.FormatFloat(m.B, 'g', -1, 64),
-				strconv.FormatFloat(m.Diff, 'g', -1, 64),
+				strconv.FormatFloat(*m.A, 'g', -1, 64),
+				strconv.FormatFloat(*m.B, 'g', -1, 64),
+				strconv.FormatFloat(*m.Diff, 'g', -1, 64),
 				m.Reason)
 		} else {
 			fmt.Fprintf(&b, "MISMATCH device=%q quantity=%q: %s\n",
@@ -102,6 +104,8 @@ func paramUnit(name string) string {
 // 登记确定缺省（与编译期同一套规则），波导损耗统一折算为 db_per_m，
 // 分束器 reflectivity 统一折算为 theta（与求解器语义一致，
 // 使 theta 与 reflectivity 两种写法可按物理含义比较）。
+// 调用方必须已通过 validateDeviceParams：theta 与 reflectivity 不会同时出现，
+// reflectivity 必在 [0,1] 内，因此 Asin(Sqrt(r)) 一定是有限值。
 func effectiveParams(d *Device) map[string]float64 {
 	p := map[string]float64{}
 	for k, v := range d.Params {
@@ -122,23 +126,57 @@ func effectiveParams(d *Device) map[string]float64 {
 
 // compareModels 对两个迁移后的模型做等价核验（纯函数，不改动输入）。
 // 判定式与求解交叉校验一致：|a-b| <= tol*max(1,|a|,|b|)。
-func compareModels(a, b *Model, tol float64) *EquivalenceReport {
+// 进入报告的任何数值若不是有限值（含差值相减溢出），返回错误而不是产出
+// 无法序列化、语义不可判定的报告；调用方保证返回错误时不交出报告。
+func compareModels(a, b *Model, tol float64) (*EquivalenceReport, error) {
+	if !isFinite(tol) || tol <= 0 {
+		return nil, newError(ErrInvalidParameter, "equivalence tolerance must be a finite positive number")
+	}
 	rep := &EquivalenceReport{Equal: true, Tolerance: tol}
 	fail := func(m Mismatch) {
 		rep.Equal = false
 		rep.Mismatches = append(rep.Mismatches, m)
 	}
 
+	// circuit 级与器件级数值型判等依据都走同一构造：
+	// A/B/Diff 逐项齐全（指针永不为 nil），保证序列化不缺项。
+	numericMismatch := func(deviceID, quantity string, a, b float64, reason string) Mismatch {
+		diff := abs64(a - b)
+		return Mismatch{
+			DeviceID: deviceID,
+			Quantity: quantity,
+			Numeric:  true,
+			A:        &a,
+			B:        &b,
+			Diff:     &diff,
+			Reason:   reason,
+		}
+	}
+
+	// finitePair 保证一对归一化取值及其差值都可序列化；
+	// 任一非有限则等价语义无法判定，整体拒绝。
+	finitePair := func(deviceID, quantity string, a, b float64) error {
+		diff := a - b
+		if !isFinite(a) || !isFinite(b) || !isFinite(diff) {
+			return newError(ErrNonFiniteInput,
+				"equivalence undecidable: normalized %q of device %q produced a non-finite comparison value",
+				quantity, deviceID).
+				withDetail("device", deviceID).
+				withDetail("parameter", quantity).
+				withDetail("a", a).
+				withDetail("b", b)
+		}
+		return nil
+	}
+
 	// 电路级：工作波长。
 	if !withinTol(a.Circuit.Wavelength, b.Circuit.Wavelength, tol) {
-		fail(Mismatch{
-			Quantity: "wavelength",
-			Numeric:  true,
-			A:        a.Circuit.Wavelength,
-			B:        b.Circuit.Wavelength,
-			Diff:     abs64(a.Circuit.Wavelength - b.Circuit.Wavelength),
-			Reason:   "circuit wavelength differs beyond tolerance",
-		})
+		if err := finitePair("", "wavelength", a.Circuit.Wavelength, b.Circuit.Wavelength); err != nil {
+			return nil, err
+		}
+		fail(numericMismatch("", "wavelength",
+			a.Circuit.Wavelength, b.Circuit.Wavelength,
+			"circuit wavelength differs beyond tolerance"))
 	}
 
 	byID := func(m *Model) map[string]*Device {
@@ -208,6 +246,9 @@ func compareModels(a, b *Model, tol float64) *EquivalenceReport {
 				fail(Mismatch{DeviceID: id, Quantity: name,
 					Reason: "parameter present only in document A"})
 			default:
+				if err := finitePair(id, name, va, vb); err != nil {
+					return nil, err
+				}
 				ok := withinTol(va, vb, tol)
 				dc.Quantities = append(dc.Quantities, QuantityComparison{
 					Name:            name,
@@ -218,17 +259,10 @@ func compareModels(a, b *Model, tol float64) *EquivalenceReport {
 					WithinTolerance: ok,
 				})
 				if !ok {
-					fail(Mismatch{
-						DeviceID: id,
-						Quantity: name,
-						Numeric:  true,
-						A:        va,
-						B:        vb,
-						Diff:     abs64(va - vb),
-						Reason: "normalized values differ beyond tolerance " +
-							strconv.FormatFloat(tol, 'g', -1, 64) +
-							" (unit " + paramUnit(name) + ")",
-					})
+					fail(numericMismatch(id, name, va, vb,
+						"normalized values differ beyond tolerance "+
+							strconv.FormatFloat(tol, 'g', -1, 64)+
+							" (unit "+paramUnit(name)+")"))
 				}
 			}
 		}
@@ -250,7 +284,7 @@ func compareModels(a, b *Model, tol float64) *EquivalenceReport {
 			}
 		}
 	}
-	return rep
+	return rep, nil
 }
 
 // canonicalConnections 把连接表规范化为排序后的字符串多重集。

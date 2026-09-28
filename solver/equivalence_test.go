@@ -99,8 +99,13 @@ func TestInequivalenceLossDiffers(t *testing.T) {
 	if m.DeviceID != "w" || m.Quantity != "loss" || !m.Numeric {
 		t.Fatalf("mismatch = %+v", m)
 	}
-	if m.A != 200 || m.B != 300 || m.Diff != 100 {
-		t.Fatalf("mismatch values = %+v, want A=200 B=300 Diff=100 (normalized)", m)
+	// 数值型判等依据逐项齐全（零值也不缺项），即便差值为 0 也必须有序列化字段。
+	if m.A == nil || m.B == nil || m.Diff == nil {
+		t.Fatalf("numeric mismatch missing values: %+v", m)
+	}
+	if *m.A != 200 || *m.B != 300 || *m.Diff != 100 {
+		t.Fatalf("mismatch values = A=%v B=%v Diff=%v, want A=200 B=300 Diff=100 (normalized)",
+			*m.A, *m.B, *m.Diff)
 	}
 	if !strings.Contains(m.Reason, "tolerance") {
 		t.Fatalf("reason should cite tolerance: %q", m.Reason)
