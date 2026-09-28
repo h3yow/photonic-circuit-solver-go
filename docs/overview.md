@@ -155,9 +155,57 @@
   内）与所用容差。
 - **不等**：`Mismatches` 逐项指出哪个器件、哪个物理量、两边各是什么
   （归一化后的值）、差了多少、为什么判为不等；结构性差异（器件缺失、
-  类型不同、连接不同）以 `Numeric=false` 加文字原因给出。
-- 任一份文档落在无法确定语义的版本/声明组合上（版本超界、旧文档携带新
-  字段、冲突声明等），**整体拒绝并说明原因，绝不挑一份继续算**。
+  类型不同、连接不同）以 `numeric=false` 加文字原因给出。
+  - 每个 mismatch 固定包含 `device_id` / `quantity` / `numeric` /
+    `a` / `b` / `diff` / `reason` 七个 JSON 键；非数值项的 `a/b/diff`
+    为 0（占位但不缺项），数值项的 `a/b/diff` 一定是有限值，即便差值
+    为 0 也照常序列化，可被下游直接解析。
+  - 为使结论与文档传入顺序无关，数值证据按取值规范化：`a=min(两边)`、
+    `b=max(两边)`、`diff=b-a`；结构性原因使用不含“文档 A/B”方位的
+    对称表述（如 "present in only one of the two documents"）。因此
+    `CompareModels(X, Y)` 与 `CompareModels(Y, X)` 的报告 JSON
+    **逐位一致**。
+- **整体拒绝（不返回任何报告，error 非 nil、report 为 nil）**的情形：
+  - 任一份文档无法确定地解析或迁移：JSON 非法、未知字段/参数/器件类型、
+    版本超界、旧文档携带新版本字段、同一对象重复键、未知损耗单位等；
+  - 器件参数**超出物理范围或声明自相矛盾**，复用与编译期完全相同的校验
+    规则，例如分束器 `reflectivity` 不在 `[0,1]`（团队中按百分比误填
+    的 `30` 即在此列——折算 `asin(sqrt(r))` 会得到 NaN，属语义不可
+    确定，绝不硬凑数值）、同一分束器**同时**给出 `theta` 与
+    `reflectivity`（两种写法冲突，无法确定按哪一种理解）；
+  - 归一化后任何比较值为 NaN/Inf（比较函数内部的最后一道防线）。
+  - 拒绝错误为分类 `SolverError`：错误信息含 "equivalence undecidable"，
+    并通过 `Detail` 点明 `device` 与 `parameter`（如
+    `device=bs, parameter=reflectivity`），调用方可用 `AsSolverError`
+    程序化取证据。注意：等价核验**不要求**拓扑可编译（悬空、成环由
+    `LoadModel`/求解链路负责），它只拒绝“物理量语义无法确定”的输入。
+- 核验是**纯函数**：不修改任何已载入电路（`CompiledCircuit` 不可变），
+  不在 Engine 上缓存任何状态，可与求解/标定/审计并发执行，重复调用
+  结论逐位一致。
+
+### 本地复现与验证
+
+```sh
+go test ./... -count=1
+go test -race ./... -count=1   # 含等价核验的顺序无关性与并发一致性
+```
+
+`equivalence_test.go` 中与本节语义对应的用例：
+
+- `TestEquivalenceReflectivityOutOfRangeRejected`：`reflectivity=30/-0.01/1.0000001`
+  在两种传入顺序下都被拒绝，错误点名器件与物理量，且不返回半截报告；
+- `TestEquivalenceThetaAndReflectivityConflictRejected`：同一分束器
+  同时声明两种写法（即使数值物理一致）也必须拒绝；
+- `TestInequivalenceReportIsCompleteAndSerializable`：判不等时报告可
+  `json.Marshal`，逐项含器件/物理量/双值/差值/原因，非数值项不缺键；
+- `TestEquivalenceReportAlwaysSerializable`：相等报告同样保证全部有限、
+  可序列化；
+- `TestEquivalenceOrderIndependent`：正序/反序报告 JSON 逐位一致
+  （数值不等、结构不等、相等三类情形）；
+- `TestEquivalenceConcurrentDeterminism`：32 goroutine × 25 轮混合
+  相等/不等/拒绝输入，结论逐位一致、拒绝不带报告（`-race` 下通过）；
+- `TestEquivalenceDoesNotMutateInputs`：核验（含拒绝路径）不改变已载入
+  电路的审计结果。
 
 ## 6. 规模上限与失败策略
 
@@ -212,8 +260,11 @@ go vet ./...
   version_default）、缺失/冲突参数标不可用且原因明确、文档级失败无半截
   报告；
 - `equivalence_test.go`：跨版本与跨声明写法判等价（含 theta↔reflectivity、
-  缺省↔显式）、不等时逐项判定依据（器件/量/双值/差值/原因）、无法确定
-  语义的版本组合整体拒绝；
+  缺省↔显式）、不等时逐项判定依据（器件/量/双值/差值/原因）与 JSON 可
+  序列化/不缺项、无法确定语义的版本组合整体拒绝；物理范围外取值
+  （reflectivity=30）与 theta+reflectivity 双重声明在两种顺序下均被
+  拒绝且无半截报告；正序/反序报告逐位一致、32×25 并发（相等/不等/
+  拒绝混合）逐位一致、核验不改动已载入电路；
 - `input_limits_test.go`：非有限/越界激励、未知端口、批量与器件数上限、
   移相器双重设置、物理参数边界（含谐振腔极点）；
 - `concurrency_test.go`：64 goroutine × 20 轮并发求解、并发标定、并发独立

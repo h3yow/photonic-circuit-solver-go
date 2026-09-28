@@ -109,9 +109,14 @@ func (e *Engine) AuditDocument(ctx context.Context, data []byte) (*AuditReport, 
 }
 
 // CompareModels 对两份模型文档做跨版本、跨声明的等价核验。
-// 两份文档都必须能确定地解析与迁移；任一份落在无法确定语义的版本上，
-// 整体拒绝并说明原因，绝不挑一份继续算。
-// 核验为纯函数：不改动任何已载入电路，可并发调用。
+// 两份文档都必须能确定地解析、迁移，且每个器件参数都具有确定的物理
+// 语义；任一份落在无法确定语义的版本/声明组合上，或取值超出物理范围
+// （如分束器 reflectivity=30 这种按百分比误填的值）、同一器件用
+// theta 与 reflectivity 两种写法自相矛盾地声明，整体拒绝并说明是
+// 哪一份文档、哪个器件、哪个物理量以及原因，报告返回 nil，绝不挑
+// 一份继续算、也不返回半截报告。
+// 核验为纯函数：不改动任何已载入电路，可并发调用；结论与两份文档
+// 的传入顺序无关，重复调用逐位一致。
 func (e *Engine) CompareModels(ctx context.Context, docA, docB []byte) (*EquivalenceReport, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -120,18 +125,29 @@ func (e *Engine) CompareModels(ctx context.Context, docA, docB []byte) (*Equival
 	if err != nil {
 		return nil, undecidableEquivalence("A", err)
 	}
+	if err := validateModelForEquivalence(ma); err != nil {
+		return nil, undecidableEquivalence("A", err)
+	}
 	mb, err := parseModel(docB, e.limits)
 	if err != nil {
 		return nil, undecidableEquivalence("B", err)
 	}
-	return compareModels(ma, mb, e.limits.EquivalenceTolerance), nil
+	if err := validateModelForEquivalence(mb); err != nil {
+		return nil, undecidableEquivalence("B", err)
+	}
+	rep, err := compareModels(ma, mb, e.limits.EquivalenceTolerance)
+	if err != nil {
+		return nil, undecidableEquivalence("?", err)
+	}
+	return rep, nil
 }
 
-// undecidableEquivalence 保留原始错误码并补充“无法确定等价语义”的上下文。
+// undecidableEquivalence 保留原始错误码并补充“无法确定等价语义”的上下文，
+// side 指出是哪一份文档（"A"/"B"，"?" 表示与单侧文档无关的比较阶段）。
 func undecidableEquivalence(side string, err error) error {
 	if se, ok := AsSolverError(err); ok {
 		return wrapError(se.Code, err,
-			"equivalence undecidable: document %s cannot be loaded with determined semantics", side)
+			"equivalence undecidable: document %s cannot be compared with determined physical semantics", side)
 	}
 	return err
 }
